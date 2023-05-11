@@ -1,0 +1,84 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eff196dc839253448b3eca2cd2d6de24, type: 3}
+  m_Name: MySRP
+  m_EditorClassIdentifier: 
+  pipelineSystem:
+    pipelineMode: 1
+    useDynamicBatching: 1
+    useGPUInstancing: 1
+    useSRPBatching: 1
+    useLightPerObject: 1
+  shadowSetting:
+    direction:
+      textureSize: 1024
+    maxDistance: 20
+    distanceFade: 1
+    directional:
+      atlasSize: 512
+      cascadeCount: 4
+      cascadeRatio1: 0.130465
+      cascadeRatio2: 0.27282342
+      cascadeRatio3: 0.48090196
+      cascadeFade: 1
+      filter: 1
+      cascadeBlendMode: 1
+    other:
+      atlasSize: 1024
+      filter: 0
+  postFXSetting: {fileID: 11400000, guid: b2c526a77f1f7cd469ecde281e06d490, type: 2}
+  cameraBuffer:
+    allowHDR: 1
+    copyColor: 1
+    copyColorReflection: 0
+    copyDepth: 1
+    copyDepthReflection: 0
+    renderScale: 1
+    bicubicRescaling: 2
+    fxaa:
+      enabled: 1
+      fixedThreshold: 0.0833
+      relativeThreshold: 0.166
+      subpixelBlending: 0.75
+      quality: 0
+  cameraRendererShader: {fileID: 4800000, guid: 8dda83dd10eb4cb4e836861127ac6913,
+    type: 3}
+  giSetting:
+    OnlyGI: 1
+    Intensity: 1
+    IBL:
+      useIBL: 0
+      irradianceMap: {fileID: 2800000, guid: 8be68de0f7318ad4f8509e5fc4d671a7, type: 2}
+      LobeSpecualrMap: {fileID: 2800000, guid: 55170aea740f29c409c9cdf436237235, type: 2}
+      BRDFMap: {fileID: 2800000, guid: ab7a077a3c921f14dbd894b4680208cb, type: 2}
+      Intensity: 0.5
+    voxelSetting:
+      VoxelBoxStartPoint: {x: -2.1589909, y: -3.601131, z: -2.281106}
+      VoxelBoxSize: {x: 6, y: 6, z: 9}
+      VoxelSize: 0.69
+      CameraBoundSize: 10
+    RSM:
+      useRSM: 1
+      fastRsm: 0
+      RSMLUTCS: {fileID: 7200000, guid: 69e0b040daaf9e74a8c9477452e174f4, type: 3}
+      mapSize: 1024
+      Intensity: 1.5
+      SampelSize: 200
+    LPV:
+      useLPV: 1
+      LPVMode: 1
+      LPVCS: {fileID: 7200000, guid: 70b7a4683f8fbab44affb702605f162b, type: 3}
+      SSLPVCS: {fileID: 7200000, guid: 0f59a28c42cfc044981e5d57f51ccbe2, type: 3}
+      radiateSize: 0
+      Intensity: 0.5
+      radiateIntensity: 1
+  colorLUTResolution: 32

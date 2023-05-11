@@ -1,0 +1,41 @@
+#pragma kernel RSMLUTCSMain
+
+Texture2D<float4> RSMTexture;
+Texture2D<float> RSMDepthTexture;
+RWTexture2D<float4> Result;
+SamplerState linearClampSampler;
+int mapSize;
+float3 lightPos;
+float3 VoxelBoxStartPoint;
+float3 VoxelBoxSize;
+int VoxelSize;
+float4x4 inverseLightViewProjectionMatrix;
+
+float3 getWorldPosFromDepth(float2 uv, float dpeth) {
+
+    float4 ndcPos = float4(uv * 2.0f - 1.0f, dpeth, 1.0f);
+#if UNITY_UV_STARTS_AT_TOP
+    ndcPos.y = -ndcPos.y;
+#endif
+    float4 worldPos = mul(inverseLightViewProjectionMatrix, ndcPos);
+    return worldPos.xyz / worldPos.w;
+
+}
+
+[numthreads(8,8,1)]
+void RSMLUTCSMain(uint3 id : SV_DispatchThreadID)
+{
+
+    float2 uv = id.xy / mapSize;
+    float3 color = RSMTexture.SampleLevel(linearClampSampler, uv, 0).rgb;
+    float depth = RSMDepthTexture.SampleLevel(linearClampSampler, uv, 0);
+    float3 worldPos = getWorldPosFromDepth(uv, depth);
+
+    float3 relativePos = worldPos - lightPos;
+    relativePos /= VoxelBoxSize * VoxelSize;
+
+
+
+    Result[id.xy] = float4(worldPos, 1.0f);
+
+}

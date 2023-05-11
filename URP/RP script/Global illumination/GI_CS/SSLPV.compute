@@ -1,0 +1,869 @@
+//#pragma kernel SSLPVSetUpCSMain
+//#pragma kernel SSLPVAcc3DCSMain
+#pragma kernel SSLPVInjectCSMain
+#pragma kernel LPVRadiateCSMain
+
+#include "../../../shaderLibrary/common.hlsl"
+#include "../../../shaderLibrary/LitInput.hlsl"
+
+RWTexture3D<float4> LPVTexture_R;
+RWTexture3D<float4> LPVTexture_G;
+RWTexture3D<float4> LPVTexture_B;
+//RWTexture3D<float4> LPVTexture_R_temp;
+//RWTexture3D<float4> LPVTexture_G_temp;
+//RWTexture3D<float4> LPVTexture_B_temp;
+float3 VoxelBoxStartPoint;
+float3 VoxelBoxSize;
+float VoxelSize;
+int radiateSize;
+float radiateIntensity;
+
+Texture2D<float4> _RSMTexture;
+Texture2D<float4> _RSMNormalTexture;
+Texture2D<float4> _RSMDepthTexture;
+SamplerState sampler_LinearClamp;
+float4 _RSMTexture_TexelSize;
+float RSMSampleSize;
+float RSMIntensity;
+float RSMMapSize;
+
+float2 getUVFromPos(float3 pos, float4x4 mat) {
+	float4 clipPos = mul(mat, float4(pos, 1.0f));
+#if UNITY_UV_STARTS_AT_TOP
+	clipPos.y = -clipPos.y;
+#endif
+	float3 ndcPos = clipPos.xyz / clipPos.w;
+	float2 uv = ndcPos.xy * 0.5f + 0.5f;
+	return uv;
+}
+
+float4 getSHFunction(float3 normal)
+{
+	float x = normal.x;
+	float y = normal.y;
+	float z = normal.z;
+	float4 SHFunction = float4(
+		0.282094792f,
+		-0.488602512f * y,
+		0.488602512f * z,
+		-0.488602512f * x
+		/*
+		  sqrt(1.0f / PI) * 0.5f,
+
+		  -sqrt(3.0f / (4.0f * PI)) * y,
+		  sqrt(3.0f / (4.0f * PI)) * z,
+		  -sqrt(3.0f / (4.0f * PI)) * x
+
+		  sqrt(15.0f / PI) * 0.5f * x * y,
+		  sqrt(15.0f / PI) * 0.5f * y * z,
+		  sqrt(5.0f / PI) * 0.25f * (-x * x - y * y + 2 * z * z),
+		  sqrt(15.0f / PI) * 0.5f * z * x,
+		  sqrt(15.0f / PI) * 0.25f * (x * x - y * y),
+
+		  sqrt(35.0f / (2.0f * PI)) * 0.25f * (3 * x * x - y * y) * y,
+		  sqrt(105.0f / PI) * 0.5f * x * z * y,
+		  sqrt(21.0f / (2.0f * PI)) * 0.25f * y * (4 * z * z - x * x - y * y),
+		  sqrt(7.0f / PI) * 0.25f * z * (2 * z * z - 3 * x * x - 3 * y * y),
+		  sqrt(21.0f / (2.0f * PI)) * 0.25f * x * (4 * z * z - x * x - y * y),
+		  sqrt(105.0f / PI) * 0.25f * (x * x - y * y) * z,
+		  sqrt(35.0f / (2.0f * PI)) * 0.25f * (x * x - 3 * y * y) * x
+		  */
+		);
+	return SHFunction;
+}
+
+float4 getSHFunctionWithCos(float3 normal) {
+	float x = normal.x;
+	float y = normal.y;
+	float z = normal.z;
+	float4 SHFunction = float4(
+		0.886226925f,
+		-1.02332671f * y,
+		1.02332671f * z,
+		-1.02332671f * x
+		);
+	return SHFunction;
+}
+
+float RadicalInverse_VdC(uint bits)
+{
+	bits = (bits << 16u) | (bits >> 16u);
+	bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+	bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+	bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+	bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+	return float(bits) * 2.3283064365386963e-10; // / 0x100000000
+}
+
+float2 Hammersley(uint i, uint N)
+{
+	return float2(float(i) / float(N), RadicalInverse_VdC(i));
+}
+
+RWTexture3D<float4> SSLPVAvgDepthTexture;
+RWTexture3D<float4> SSLPVVPLAvgDepthTexture;
+RWTexture3D<float4> SSLPVAvgDepthSquareTexture;
+Texture2D<float4> _NormalTexture;
+float3 cameraPos;
+float3 lightDir;
+
+float3 getVoxelPointDistance(float3 centerVoxelWorldPos, float3 normal, float3 worldPos) {
+
+	float halfVoxelSize = VoxelSize * 0.5f;
+	float3 voxelPlanePoint = centerVoxelWorldPos + sign(normal) * halfVoxelSize;
+	float3 judgeVPLVoxelPlane = (normal - normalize(voxelPlanePoint - worldPos)) * normal;
+	judgeVPLVoxelPlane = judgeVPLVoxelPlane == 0.0f ? abs(normal) : judgeVPLVoxelPlane;
+	float maxAxle = max(judgeVPLVoxelPlane.x, max(judgeVPLVoxelPlane.y, judgeVPLVoxelPlane.z));
+	judgeVPLVoxelPlane = sign((sign(judgeVPLVoxelPlane - maxAxle) + 1.0f) * normal);
+	float3 voxelPlane = centerVoxelWorldPos + judgeVPLVoxelPlane * halfVoxelSize;
+	float3 voxelPointDistance = normal / length(normal * judgeVPLVoxelPlane) * length((voxelPlane - worldPos) * judgeVPLVoxelPlane);// +worldPos;
+	return voxelPointDistance;
+}
+
+//[numthreads(8, 8, 8)]
+//void LPVRadiateCSMain(uint3 id : SV_DispatchThreadID) {
+void LPVRadiate(uint3 id) {
+
+	float4 final_SHCofe_R = LPVTexture_R[id];
+	float4 final_SHCofe_G = LPVTexture_G[id];
+	float4 final_SHCofe_B = LPVTexture_B[id];
+	//DeviceMemoryBarrierWithGroupSync();
+
+	float halfVoxelSize = VoxelSize * 0.5f;
+	float3 centerVoxelWorldPos = id * VoxelSize + VoxelBoxStartPoint + halfVoxelSize;
+	float3 offset[] = { float3(-1.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f), float3(0.0f, -1.0f, 0.0f),
+					   float3(0.0f, 1.0f, 0.0f), float3(0.0f, 0.0f, -1.0f), float3(0.0f, 0.0f, 1.0f) };
+
+	for (int s = 0; s < radiateSize; s++) {
+
+		float4 SHCofe_R = 0.0f;
+		float4 SHCofe_G = 0.0f;
+		float4 SHCofe_B = 0.0f;
+
+		for (int i = 0; i < 6; i++) {
+
+			float3 index = id + offset[i];
+			float4 SHCofe_R_ADD = LPVTexture_R[index];
+			float4 SHCofe_G_ADD = LPVTexture_G[index];
+			float4 SHCofe_B_ADD = LPVTexture_B[index];
+			DeviceMemoryBarrierWithGroupSync();
+
+			float3 avgDepth = SSLPVAvgDepthTexture[index].xyz;
+			float3 VPLAvgDepth = SSLPVVPLAvgDepthTexture[index].xyz;
+			float3 avgDepthSquare = SSLPVAvgDepthSquareTexture[index].xyz;
+			float3 radiateVoxelCenterPos = centerVoxelWorldPos + offset[i] * VoxelSize;
+
+			for (int j = 0; j < 6; j++) {
+
+				if (i == j) {
+					continue;
+				}
+
+				float3 radiateDir = clamp(-offset[i] + 0.5f * offset[j], -1.0f, 1.0f);
+				float3 nearPlane = radiateVoxelCenterPos + radiateDir * halfVoxelSize;
+				float3 avgDepthOffset = nearPlane - avgDepth;
+
+				float3 VPLAvgDepthOffset = nearPlane - VPLAvgDepth;
+				float3 depthOffset = VPLAvgDepthOffset - avgDepthOffset;
+				float3 avgDepthSquareOffset = sign(-lightDir * radiateDir) > 0.0f ? avgDepthSquare : VoxelSize - avgDepthSquare;
+				avgDepthSquareOffset = saturate(avgDepthSquareOffset - avgDepthOffset * avgDepthOffset);
+
+				float3 avgDepthCheck = sign(avgDepthOffset * radiateDir) * sign(avgDepth) * sign(avgDepthSquare) * sign(depthOffset);
+				float3 unoccRate = avgDepthCheck > 0.0f ? avgDepthSquareOffset / (avgDepthSquareOffset + depthOffset * depthOffset) + 0.5f : 1.0f;
+				radiateDir = normalize(radiateDir);
+				unoccRate = unoccRate * radiateDir * radiateDir;
+				float unoccScale = (unoccRate.x + unoccRate.y + unoccRate.z) * radiateIntensity;
+
+				float4 SHFunction = getSHFunctionWithCos(-radiateDir);
+				float4 SHFunction_center = getSHFunction(-offset[j]);
+				float SolidAngle = j / 2 == i / 2 ? 0.423431254f : 0.400696844f;
+				SolidAngle *= unoccScale;
+
+				float radiateLight_R = saturate(dot(SHCofe_R_ADD, SHFunction)); //getRadiateLight(SHCofe_R_ADD, SHFunction);
+				radiateLight_R *= SolidAngle;
+				SHCofe_R += radiateLight_R * SHFunction_center; // getSHCofe(i, j, radiateLight_R, SHFunction_center);
+
+				float radiateLight_G = saturate(dot(SHCofe_G_ADD, SHFunction));
+				radiateLight_G *= SolidAngle;
+				SHCofe_G += radiateLight_G * SHFunction_center;
+
+				float radiateLight_B = saturate(dot(SHCofe_B_ADD, SHFunction));
+				radiateLight_B *= SolidAngle;
+				SHCofe_B += radiateLight_B * SHFunction_center;
+
+			}
+
+		}
+
+		final_SHCofe_R += SHCofe_R / PI;
+		final_SHCofe_G += SHCofe_G / PI;
+		final_SHCofe_B += SHCofe_B / PI;
+
+		LPVTexture_R[id] = SHCofe_R / PI;
+		LPVTexture_G[id] = SHCofe_G / PI;
+		LPVTexture_B[id] = SHCofe_B / PI;
+		DeviceMemoryBarrierWithGroupSync();
+
+	}
+
+	LPVTexture_R[id] = final_SHCofe_R;
+	LPVTexture_G[id] = final_SHCofe_G;
+	LPVTexture_B[id] = final_SHCofe_B;
+
+}
+
+/*
+
+[numthreads(8, 8, 1)]
+void SSLPVSetUpCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float3 index = (float3)id;
+	float2 uv = index.xy / _CameraDepthTexture_TexelSize.zw;
+	float depth = _CameraDepthTexture[id.xy];
+	float3 VPLPos = ComputeWorldSpacePosition(uv, depth, inverseLightViewProjectionMatrix);
+	float3 voxelIndex = floor((VPLPos - VoxelBoxStartPoint) / VoxelSize);
+
+	if (voxelIndex.x < VoxelBoxSize.x && voxelIndex.x > 0
+		&& voxelIndex.y < VoxelBoxSize.y && voxelIndex.y > 0
+		&& voxelIndex.z < VoxelBoxSize.z && voxelIndex.z > 0) {
+
+		float3 voxelCenterPos = voxelIndex * VoxelSize + VoxelBoxStartPoint + VoxelSize * 0.5f;
+		float dis = length(cameraPos - voxelCenterPos);
+		float weight = dis > 10.0f ? 1.0f : 10.0f / dis;
+		SSLPVCalcSizeTexture[voxelIndex] = float4(voxelIndex * weight, 1.0f);
+
+	}
+
+}
+
+
+RWStructuredBuffer<float3> SSLPVSize;
+int3 threadGroupSize;
+groupshared float4 sharedFloat4[512];
+
+[numthreads(8, 8, 8)]
+void SSLPVAcc3DCSMain(uint3 threadID : SV_DispatchThreadID, uint3 groupThreadID : SV_GroupThreadID, uint3 groupID : SV_GroupID) {
+
+	int sharedID = groupThreadID.x + 8 * groupThreadID.y + 64 * groupThreadID.z;
+	int3 accSize = threadGroupSize;
+	int3 surpuls = 0;
+
+	[unroll(10)]
+	while (accSize.x > 0 || accSize.y > 0 || accSize.z > 0) {
+
+		if (groupID.x < accSize.x && groupID.y < accSize.y && groupID.z < accSize.z) {
+
+			sharedFloat4[sharedID] = SSLPVCalcSizeTexture[threadID];
+			DeviceMemoryBarrierWithGroupSync();
+
+			surpuls.x = accSize.x >= 8 ? 4 : accSize.x / 2;
+			surpuls.y = accSize.y >= 8 ? 4 : accSize.y / 2;
+			surpuls.z = accSize.z >= 8 ? 4 : accSize.z / 2;
+
+			for (int s = surpuls.x; s > 0; s >>= 1) {
+				if (groupThreadID.x < s) {
+					sharedFloat4[sharedID] += sharedFloat4[sharedID + s];
+				}
+				GroupMemoryBarrier();
+			}
+
+			for (int s = surpuls.y; s > 0; s >>= 1) {
+				if (groupThreadID.y < s) {
+					sharedFloat4[sharedID] += sharedFloat4[sharedID + s * 8];
+				}
+				GroupMemoryBarrier();
+			}
+
+			for (int s = surpuls.z; s > 0; s >>= 1) {
+				if (groupThreadID.z < s) {
+					sharedFloat4[sharedID] += sharedFloat4[sharedID + s * 64];
+				}
+				GroupMemoryBarrier();
+			}
+
+			if (groupThreadID.x == 0 && groupThreadID.y == 0 && groupThreadID.z == 0) {
+				SSLPVCalcSizeTexture[groupID] = sharedFloat4[0];
+			}
+
+			accSize.x = ceil(accSize.x * 0.125f);
+			accSize.y = ceil(accSize.y * 0.125f);
+			accSize.z = ceil(accSize.z * 0.125f);
+
+		}
+
+	}
+
+	if (threadID.x == 0 && threadID.y == 0 && threadID.z == 0) {
+		float4 accValue = SSLPVCalcSizeTexture[int3(0, 0, 0)];
+		SSLPVSize[0] = accValue.xyz / accValue.w;
+	}
+
+
+	/*
+int voxelBoxSize = VoxelBoxSize.x * VoxelSize;
+while (voxelBoxSize > 1) {
+	voxelBoxSize /= 2;
+	if (id.x < voxelBoxSize) {
+		SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[id + int3(voxelBoxSize, 0, 0)];
+	}
+	DeviceMemoryBarrierWithGroupSync();
+}
+
+voxelBoxSize = VoxelBoxSize.y * VoxelSize;
+while(voxelBoxSize > 1) {
+	voxelBoxSize /= 2;
+	if (id.y < voxelBoxSize) {
+		SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[id + int3(0, voxelBoxSize, 0)];
+	}
+	DeviceMemoryBarrierWithGroupSync();
+}
+
+voxelBoxSize = VoxelBoxSize.z * VoxelSize;
+while (voxelBoxSize > 1) {
+	voxelBoxSize /= 2;
+	if (id.z < voxelBoxSize) {
+		SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[id + int3(0, 0, voxelBoxSize)];
+	}
+	DeviceMemoryBarrierWithGroupSync();
+}
+*/
+/*
+	if (wrapSize.x > 1) {
+		index = wrapSize.x * 4;
+
+		if (fmod(wrapSize.x, 2) > 0.1f) {
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[float3(id.x + 16 * index, id.y, id.z)];
+		}
+		[unroll(6)]
+		while (index >= 1) {
+			if (groupID.x < index) {
+				uint3 addIndex = uint3(id.x + index * 8, id.y, id.z);
+				SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+				float4 voxelIndex = SSLPVCalcSizeTexture[addIndex];
+				if()
+			}
+			index << 1;
+		}
+
+	}
+	if (wrapSize.y > 1) {
+		index = wrapSize.y / 2;
+
+		if (fmod(wrapSize.y, 2) > 0.1f) {
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[float3(id.x, id.y + 16 * index, id.z)];
+		}
+
+		[unroll(6)]
+		while (index >= 1) {
+			if (groupID.y < index) {
+				uint3 addIndex = uint3(id.x, id.y + index * 8, id.z);
+				SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+			}
+			index << 1;
+		}
+
+	}
+	if (wrapSize.z > 1) {
+		index = wrapSize.z / 2;
+
+		if (fmod(wrapSize.z, 2) > 0.1f) {
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[float3(id.x, id.y, id.z + 16 * index)];
+		}
+
+		[unroll(6)]
+		while (index >= 1) {
+			if (groupID.z < index) {
+				uint3 addIndex = uint3(id.x, id.y, id.z + index * 8);
+				SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+			}
+			index << 1;
+		}
+
+	}
+
+	DeviceMemoryBarrierWithGroupSync();
+
+	index = 4;
+	[unroll(6)]
+	while(index >= 1) {
+		if (groupThreadID.x < index) {
+			uint3 addIndex = uint3(id.x + index, id.y, id.z);
+			float4 voxelIndex = SSLPVCalcSizeTexture[addIndex];
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+			//screenVoxelIndex += subgroupShuffleDown(screenVoxelIndex, i);
+		}
+		index << 1;
+	}
+	index = 4;
+	[unroll(6)]
+	while (index >= 1) {
+		if (groupThreadID.y < index) {
+			uint3 addIndex = uint3(id.x, id.y + index, id.z);
+			float4 voxelIndex = SSLPVCalcSizeTexture[addIndex];
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+		}
+		index << 1;
+	}
+	index = 4;
+	[unroll(6)]
+	while (index >= 1) {
+		if (groupThreadID.z < index) {
+			uint3 addIndex = uint3(id.x, id.y, id.z + index);
+			float4 voxelIndex = SSLPVCalcSizeTexture[addIndex];
+			SSLPVCalcSizeTexture[id] += SSLPVCalcSizeTexture[addIndex];
+		}
+		index << 1;
+	}
+
+
+}
+*/
+[numthreads(8, 8, 8)]
+void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float halfVoxelSize = VoxelSize * 0.5f;
+	float3 centerVoxelWorldPos = id * VoxelSize + VoxelBoxStartPoint + halfVoxelSize;	//worldSpace
+	//float3 centerVoxelViewPos = mul(ViewMatrix, float4(centerVoxelWorldPos, 1.0f));	//viewSpace
+	//float3 nearPlaneVoxelPos = centerVoxelViewPos + halfVoxelSize;// *float3(0.57735f, 0.57735f, 0.57735);	//viewSpace
+	//float3 nearPlaneVoxelPos = centerVoxelWorldPos + halfVoxelSize;	//worldSpace
+	//float3 aveDepthSquare = 0.0f;
+	float3 avgDepth = 0.0f;
+	float3 avgDepthSquare = 0.0f;
+	int VPLNum = 0;
+	//float3(0.0f, 0.0f, halfVoxelSize);// +halfVoxelSize;
+	//float screenDepth[27] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
+	//bool VPLContain[27] = { false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false };
+	//float2 RSMUV[27] = { float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f),float2(0.0f, 0.0f),float2(0.0f, 0.0f),float2(0.0f, 0.0f),float2(0.0f, 0.0f),float2(0.0f, 0.0f),
+						 //float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f),
+						 //float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f), float2(0.0f, 0.0f) };
+	//float3 VPLCameraPos[27] = { float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f),
+								//float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f),
+								//float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f) };
+	/*
+		int VPLSample = 0;
+	for (int VPLSample = 0; VPLSample < 27; VPLSample++) {
+
+		int x = VPLSample / 9;
+		int y = (VPLSample - x * 9) / 3;
+		int z = VPLSample - x * 9 - y * 3;
+		float3 offsetVoxelBound = (float3(x, y, z) - 1.0f) * halfVoxelSize;
+
+		float3 sampleVoxelPos = offsetVoxelBound + centerVoxelPos;
+		float3 sampleWorldPos = mul(inverseViewMatrix, float4(sampleVoxelPos, 1.0f));	//worldPos
+		float2 RSMUV = getUVFromPos(sampleWorldPos, LightVPMatrix);	//RSMUV
+		float2 uvIndex = RSMUV * RSMMapSize;
+
+		float3 RSMDepth = _RSMDepthTexture[uvIndex];
+		float3 VPLPos = ComputeWorldSpacePosition(RSMUV, RSMDepth, inverseLightViewProjectionMatrix);
+		float3 VPLCameraPosition = mul(unity_MatrixV, float4(VPLPos, 1.0f));	//cameraPos
+
+		float2 cameraUV = getUVFromPos(VPLCameraPosition, UNITY_MATRIX_P);	//CameraUV
+		cameraUV = cameraUV * _CameraDepthTexture_TexelSize.zw + 0.5f * _CameraDepthTexture_TexelSize.xy;
+		float cameraDepth = _CameraDepthTexture[cameraUV];
+
+		float3 offset = abs(VPLCameraPosition - centerVoxelPos);
+		if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+			aveDepth += cameraDepth;
+			VPLNum++;
+		}
+
+		RSMUV[VPLSample] = uvIndex;
+		VPLCameraPos[VPLSample] = VPLCameraPosition;
+
+	}
+	*/
+	/*
+	for (int x = -1; x < 2; x++) {
+		for (int y = -1; y < 2; y++) {
+			for (int z = -1; z < 2; z++) {
+
+				float3 sampleVoxelPos = float3(x, y, z) * halfVoxelSize + centerVoxelPos;
+				float2 RSMUV = getUVFromPos(sampleVoxelPos, UNITY_MATRIX_P);	//RSMUV
+				float2 uvIndex = RSMUV * RSMMapSize;
+
+				float RSMDepth = _RSMDepthTexture[uvIndex];
+				//float3 VPLViewPos = ComputeWorldSpacePosition(RSMUV, RSMDepth, inverseLightProjectionMatrix);	//viewSpace
+				float3 VPLWorldPos = ComputeWorldSpacePosition(RSMUV, RSMDepth, inverseLightViewProjectionMatrix);	//worldSpace
+				float3 VPLViewPos = mul(LightViewMatrix, float4(VPLWorldPos, 1.0f));	//viewSpace
+
+				float2 cameraUV = getUVFromPos(VPLWorldPos, ViewProjectionMatrix);
+				uvIndex = cameraUV * _CameraDepthTexture_TexelSize.zw;	// +0.5f * _CameraDepthTexture_TexelSize.xy;
+				float cameraDepth = _CameraDepthTexture[uvIndex].x;
+				float3 cameraWorldPos = ComputeWorldSpacePosition(cameraUV, cameraDepth, inverseViewProjectionMatrix);
+				float3 cameraLightViewPos = mul(LightViewMatrix, float4(cameraWorldPos, 1.0f));
+
+				//float3 VPLViewPos = mul(LightViewMatrix, float4(VPLPos, 1.0f));	//viewSpace
+				//float2 cameraUV = getUVFromPos(VPLPos, ViewProjectionMatrix);	//CameraUV
+				//uvIndex = cameraUV * _CameraDepthTexture_TexelSize.zw + 0.5f * _CameraDepthTexture_TexelSize.xy;
+				//float cameraDepth = _CameraDepthTexture[uvIndex].x;
+				//cameraDepth = ComputeWorldSpacePosition(cameraUV, cameraDepth, inverseProjectionMatrix).z;	//viewSpace
+				//cameraDepth = LinearEyeDepth(cameraDepth, _ZBufferParams);	//viewSpace
+				float3 offset = abs(VPLViewPos - centerVoxelPos);
+				if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+					aveDepth += cameraLightViewPos;	// VPLViewPos;
+					VPLNum++;
+				}
+				/*
+				RSMUV[VPLSample] = uvIndex;
+				VPLCameraPos[VPLSample] = VPLCameraPosition;
+				VPLSample++;
+				
+			}
+		}
+	}
+	*/
+	/*
+	float3 sampleVoxelPosX = centerVoxelPos;// mul(inverseLightViewMatrix, float4(centerVoxelPos, 1.0f));
+	float2 RSMUVX = getUVFromPos(sampleVoxelPosX, UNITY_MATRIX_P);	//RSMUV
+	float2 uvIndexX = RSMUVX * RSMMapSize;
+
+	float RSMDepthX = _RSMDepthTexture[uvIndexX];
+	float3 VPLViewPosX = ComputeWorldSpacePosition(RSMUVX, RSMDepthX, inverseLightViewProjectionMatrix);
+	VPLViewPosX = mul(LightViewMatrix, float4(VPLViewPosX, 1.0f));
+	*/
+	/*
+	for (int x = 0; x < 10; x++) {
+		for (int y = 0; y < 10; y++) {
+			for (int z = 0; z < 10; z++) {
+
+				float3 sampleDir = normalize((float3(x, y, z) - 5) * 0.5f) * halfVoxelSize;
+				float3 sampleWorldPos = sampleDir + centerVoxelWorldPos;
+				/*
+				float theta_Pi = theta * PI_4;
+				float phi_Pi = phi * PI_4;
+				float3 sampleDir = float3(sin(theta_Pi) * cos(phi_Pi), cos(theta_Pi), sin(theta_Pi) * sin(phi_Pi));
+				float3 sampleWorldPos = sampleDir * halfVoxelSize + centerVoxelPos;
+				
+				float2 cameraUV = getUVFromPos(sampleWorldPos, ViewProjectionMatrix);
+				float2 uvIndex = cameraUV * _CameraDepthTexture_TexelSize.zw;
+				float cameraDepth = _CameraDepthTexture[uvIndex].x;
+				float3 cameraWorldPos = ComputeWorldSpacePosition(cameraUV, cameraDepth, inverseViewProjectionMatrix);
+
+				float3 offset = length(cameraWorldPos - centerVoxelWorldPos);
+				if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+
+					float3 normal = _NormalTexture[uvIndex].xyz * 2.0f - 1.0f;
+					float3 depth = cameraWorldPos;
+					aveDepth += depth;
+					depth = abs(centerVoxelWorldPos + sign(-lightDir) * halfVoxelSize - depth);
+					aveDepthSquare += depth * depth;
+					VPLNum++;
+				}
+			}
+		}
+	}
+	*/
+	for (int i = 0; i < 20; i++) {
+
+		float2 index = Hammersley(i, 20);
+		float theta_Pi = index.x * PI;
+		float phi_Pi = index.y * 2.0f * PI;
+		//int index = i * 10;
+		//float theta_Pi = RadicalInverse_VdC(index) * PI;
+		//float phi_Pi = RadicalInverse_VdC(1000 - index) * 2.0f * PI;
+		float3 sampleDir = float3(sin(theta_Pi) * cos(phi_Pi), cos(theta_Pi), sin(theta_Pi) * sin(phi_Pi));
+		float3 sampleWorldPos = sampleDir * halfVoxelSize + centerVoxelWorldPos;
+
+		float2 cameraUV = getUVFromPos(sampleWorldPos, ViewProjectionMatrix);
+		float2 uvIndex = cameraUV * _CameraDepthTexture_TexelSize.zw;
+		float cameraDepth = _CameraDepthTexture[uvIndex].x;
+		float3 cameraWorldPos = ComputeWorldSpacePosition(cameraUV, cameraDepth, inverseViewProjectionMatrix);
+
+		float3 offset = abs(cameraWorldPos - centerVoxelWorldPos);
+		if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+
+			//float3 normal = _NormalTexture[uvIndex].xyz * 2.0f - 1.0f;
+			float3 depth = cameraWorldPos;
+			avgDepth += depth;
+			depth = abs(centerVoxelWorldPos + sign(-lightDir) * halfVoxelSize - depth);
+			avgDepthSquare += depth * depth;
+			VPLNum++;
+		}
+	}
+
+	//aveDepth = aveDepth.z == 0.0f ? nearPlaneVoxelPos : aveDepth;
+	//aveDepth = saturate(nearPlaneVoxelPos - aveDepth / max(VPLNum, 1));
+	//aveDepthSquare = saturate(nearPlaneVoxelPos - aveDepth / max(VPLNum, 1));
+	//aveDepth = mul(inverseViewMatrix, aveDepth / max(VPLNum, 1));	//worldPos
+	//aveDepthSquare = aveDepthSquare / max(VPLNum, 1);
+	//SSLPVAvgDepthTexture[id] = float4(aveDepth, 1.0f);
+	//SSLPVAvgDepthSquareTexture[id] = float4(aveDepthSquare, 1.0f);
+	//LPVTexture_R[id] = float4(aveDepth, 1.0f);
+	float3 avgPos = avgDepth / max(VPLNum, 1);	//worldPos
+	float3 avgSquarePos = avgDepthSquare / max(VPLNum, 1);
+	float3 originAvgPos = SSLPVAvgDepthTexture[id];
+	float3 originAvgSquarePos = SSLPVAvgDepthSquareTexture[id];
+
+	avgPos = VPLNum == 0 ? originAvgPos : avgPos * 0.1f + originAvgPos * 0.9f;
+	avgSquarePos = VPLNum == 0 ? originAvgSquarePos : avgSquarePos * 0.1f + originAvgSquarePos * 0.9f;
+	/*
+	for (int x = -1; x < 2; x++) {
+		for (int y = -1; y < 2; y++) {
+			for (int z = -1; z < 2; z++) {
+
+				int3 offsetIndex = id + int3(x, y, z);
+				float3 nearAvgDepth = SSLPVAvgDepthTexture[offsetIndex];
+				float3 nearAvgDepthSquare = SSLPVAvgDepthSquareTexture[offsetIndex];
+				avePos += nearAvgDepth / 100;
+				aveSquarePos += nearAvgDepthSquare / 100;
+			}
+		}
+	}
+	*/
+	SSLPVAvgDepthTexture[id] = float4(avgPos, sign(VPLNum));
+	SSLPVAvgDepthSquareTexture[id] = float4(avgSquarePos, sign(VPLNum));
+	//LPVTexture_R[id] = float4(avgPos, sign(VPLNum));
+	//LPVTexture_G[id] = float4(avgSquarePos, sign(VPLNum));
+	//LPVTexture_B[id] = float4(avgSquarePos, sign(VPLNum));
+	DeviceMemoryBarrierWithGroupSync();
+
+	float4 SHCofe_R = 0.0f;
+	float4 SHCofe_G = 0.0f;
+	float4 SHCofe_B = 0.0f;
+	float3 VPLAvgDepth = 0.0f;
+	VPLNum = 0;
+	for (int i = 0; i < 20; i++) {
+
+		float2 index = Hammersley(i, 20);
+		float theta_Pi = index.x * PI;
+		float phi_Pi = index.y * 2.0f * PI;
+		float3 sampleDir = float3(sin(theta_Pi) * cos(phi_Pi), cos(theta_Pi), sin(theta_Pi) * sin(phi_Pi));
+		float3 sampleWorldPos = sampleDir * halfVoxelSize + centerVoxelWorldPos;
+		float2 RSMUV = getUVFromPos(sampleWorldPos, LightVPMatrix);	//RSMUV
+		float2 uvIndex = RSMUV * RSMMapSize;
+
+		float RSMDepth = _RSMDepthTexture[uvIndex];
+		float3 VPLWorldPos = ComputeWorldSpacePosition(RSMUV, RSMDepth, inverseLightViewProjectionMatrix);	//worldSpace
+		float3 VPLIndex = floor((VPLWorldPos - VoxelBoxStartPoint) / VoxelSize);
+
+		float3 VPLWorldNormal = _RSMNormalTexture[uvIndex];	//worldNormal
+		VPLWorldNormal = VPLWorldNormal * 2.0f - 1.0f;
+		float3 VPLColor = _RSMTexture[uvIndex];
+
+		float3 VPLCenterVoxelWorldPos = VPLIndex * VoxelSize + VoxelBoxStartPoint + halfVoxelSize;	//worldSpace
+		float3 avgPos = SSLPVAvgDepthTexture[VPLIndex].xyz;
+
+		float3 VPLVoxelPointDistance = getVoxelPointDistance(VPLCenterVoxelWorldPos, VPLWorldNormal, VPLWorldPos);
+		//float3 disVPLToAvg = VPLWorldPos - avgPos;
+		//float3 crossNormal = cross(VPLNormal, normalize(disVPLToAvg));
+		//crossNormal = cross(crossNormal, VPLNormal);
+		//float3 VPLNormalPoint = avgPos + dot(disVPLToAvg, crossNormal) * crossNormal;
+		float3 VPLMoveDistance = VPLVoxelPointDistance + dot(VPLWorldPos - avgPos, VPLWorldNormal) * VPLWorldNormal;
+
+		float3 offset = abs(VPLWorldPos + VPLMoveDistance - centerVoxelWorldPos);
+		if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+			//float3 dir = normalize(VPLWorldPos - centerVoxelWorldPos);
+			//float fluxCos = saturate(dot(VPLWorldNormal, -dir));
+			float3 dir = normalize(-VPLWorldNormal);
+			float fluxCos = abs(dot(normalize(VPLWorldPos - centerVoxelWorldPos), dir));
+			float4 SHFunction = getSHFunction(dir);
+
+			SHCofe_R += SHFunction * VPLColor.r * fluxCos;
+			SHCofe_G += SHFunction * VPLColor.g * fluxCos;
+			SHCofe_B += SHFunction * VPLColor.b * fluxCos;
+
+			VPLAvgDepth += VPLWorldPos;
+			VPLNum++;
+
+		}
+	}
+
+	/*
+	for (int x = -1; x < 2; x++) {
+		for (int y = -1; y < 2; y++) {
+			for (int z = -1; z < 2; z++) {
+				{
+					//float2 uvIndex = RSMUV[i];
+					//float3 VPLPos = VPLCameraPos[i];
+					float3 sampleVoxelPos = normalize(float3(x, y, z)) * halfVoxelSize + centerVoxelWorldPos;	//worldSpace
+					float2 RSMUV = getUVFromPos(sampleVoxelPos, LightVPMatrix);	//RSMUV
+					float2 uvIndex = RSMUV * RSMMapSize;
+
+					float RSMDepth = _RSMDepthTexture[uvIndex];
+					float3 VPLWorldPos = ComputeWorldSpacePosition(RSMUV, RSMDepth, inverseLightViewProjectionMatrix);	//worldSpace
+					float3 VPLIndex = floor((VPLWorldPos - VoxelBoxStartPoint) / VoxelSize);
+					//float3 VPLViewPos = mul(ViewMatrix, float4(VPLWorldPos, 1.0f));	//viewSpace
+
+					float3 VPLWorldNormal = _RSMNormalTexture[uvIndex];	//worldNormal
+					float3 VPLNormal = VPLWorldNormal * 2.0f - 1.0f;
+					//VPLNormal = mul(float4(VPLNormal, 1.0f), inverseViewMatrix);	//viewNormal
+					//VPLNormal = normalize(VPLNormal);
+					float3 VPLColor = _RSMTexture[uvIndex];
+
+					float3 VPLCenterVoxelWorldPos = VPLIndex * VoxelSize + VoxelBoxStartPoint + halfVoxelSize;	//worldSpace
+					//float3 VPLCenterVoxelViewPos = mul(ViewMatrix, float4(VPLCenterVoxelWorldPos, 1.0f));	//viewSpace
+					//float3 VPLNearPlane = VPLCenterVoxelWorldPos + halfVoxelSize;
+					float3 VPLAvgPos = SSLPVAvgDepthTexture[VPLIndex].xyz;
+					//float3 depthDir = VPLAvgPos - VPLWorldPos;
+					//float isInfluence = sign(dot(depthDir, VPLNormal));
+					//float3 VPLAvgDepth = SSLPVAvgDepthTexture[VPLIndex].xyz;
+					//float3 VPLDepth = VPLNearPlane - VPLViewPos;
+					//float3 depthOffset = VPLAvgDepth - VPLDepth;
+					//float3 cameraDir = normalize(-VPLViewPos);
+					//float cosAngle = dot(cameraDir, VPLNormal);
+					//float3 moveFlag = sign(cosAngle) * sign(depthOffset);
+					//float3 VPLMoveDistance = moveFlag == 1.0f ? VoxelSize - VPLAvgDepth : VPLAvgDepth;
+					//VPLMoveDistance *= VPLNormal;
+					//float3 VPLAvgDepthSquare = SSLPVAvgDepthSquareTexture[VPLIndex].xyz;
+					//float3 unoccRate = VPLAvgDepthSquare / (VPLAvgDepthSquare + depthOffset * depthOffset);
+					//float3 occRate = (VPLAvgDepth - unoccRate * VPLDepth) / (1.0f - unoccRate);
+					//occRate.x = depthOffset.x < 0.0f ? cosAngle > 0.0f ? occRate.x : unoccRate.x : 1.0f;
+					//occRate.y = depthOffset.y < 0.0f ? cosAngle > 0.0f ? occRate.y : unoccRate.y : 1.0f;
+					//occRate.z = depthOffset.z < 0.0f ? cosAngle > 0.0f ? occRate.z : unoccRate.z : 1.0f;
+					//occRate = normalize(occRate);
+
+					float VPLMoveDistance = length(VPLCenterVoxelWorldPos + VPLNormal * halfVoxelSize - VPLAvgPos) * 1.1f;
+					float3 offset = abs(VPLWorldPos + VPLMoveDistance * VPLNormal - centerVoxelWorldPos);
+					if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+						//float3 dir = normalize(VPLWorldPos - centerVoxelWorldPos);
+						//float fluxCos = saturate(dot(VPLWorldNormal, -dir));
+						float3 dir = normalize(-VPLNormal);
+						float fluxCos = abs(dot(normalize(VPLWorldPos - centerVoxelWorldPos), -dir));
+						float4 SHFunction = getSHFunction(dir);
+
+						//occRate = occRate * VPLNormal * VPLNormal;
+						//float lightPermeateRate = (occRate.x + occRate.y + occRate.z) * 0.3333f;
+
+						SHCofe_R += SHFunction * VPLColor.r * fluxCos;
+						SHCofe_G += SHFunction * VPLColor.g * fluxCos;
+						SHCofe_B += SHFunction * VPLColor.b * fluxCos;
+
+						VPLNum++;
+					}
+				}
+			}
+		}
+	}
+	*/
+
+	/*
+	for (float x = -halfVoxelSize; x <= halfVoxelSize; x += halfVoxelSize) {
+		for (float y = -halfVoxelSize; y <= halfVoxelSize; y += halfVoxelSize) {
+			for (float z = -halfVoxelSize; z <= halfVoxelSize; z += halfVoxelSize) {
+
+				float3 sampleVoxelPos = float3(x, y, z) + centerVoxelPos;
+				float2 uv = getUVFromPos(sampleVoxelPos, LightProjectionMatrix);
+				float2 uvIndex = uv * RSMMapSize;
+
+				float3 sampleDepth = _RSMDepthTexture[uvIndex];
+				float3 VPLPos = ComputeWorldSpacePosition(uv, sampleDepth, inverseLightProjectionMatrix);
+				float3 VPLNormal = _RSMNormalTexture[uvIndex];
+				VPLNormal = VPLNormal * 2.0f - 1.0f;
+				float3 VPLColor = _RSMTexture[uvIndex];
+
+				uv = getUVFromPos(VPLPos, UNITY_MATRIX_P);
+				uv = uv * _CameraDepthTexture_TexelSize.zw + 0.5f * _CameraDepthTexture_TexelSize.xy;
+				float screenDepth = _CameraDepthTexture[uv];
+
+				float offsetDistance = VoxelSize - (screenDepth - nearPlaneVoxelPos.z);
+				float3 VPLPos_Temp = VPLPos + offsetDistance * VPLNormal;
+				float3 offset = abs(centerVoxelPos - VPLPos_Temp);
+				if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+
+					float3 dir = normalize(VPLPos - nearPlaneVoxelPos);
+					float4 SHFunction = getSHFunction(dir);
+					float fluxCos = saturate(dot(VPLNormal, -dir));
+
+					SHCofe_R += SHFunction * VPLColor.r * fluxCos;
+					SHCofe_G += SHFunction * VPLColor.g * fluxCos;
+					SHCofe_B += SHFunction * VPLColor.b * fluxCos;
+
+				}
+			}
+		}
+	}
+	*/
+	LPVTexture_R[id] = SHCofe_R * 0.2f;
+	LPVTexture_G[id] = SHCofe_G * 0.2f;
+	LPVTexture_B[id] = SHCofe_B * 0.2f;
+
+	float3 originVPLAvgPos = SSLPVVPLAvgDepthTexture[id];
+	float3 VPLAvgPos = VPLAvgDepth / max(VPLNum, 1);
+	VPLAvgPos = VPLAvgPos == 0 ? originVPLAvgPos : VPLAvgPos * 0.1f + originVPLAvgPos * 0.9f;
+	SSLPVVPLAvgDepthTexture[id] = float4(VPLAvgPos, sign(VPLNum));
+	DeviceMemoryBarrierWithGroupSync();
+
+	LPVRadiate(id);
+
+}
+
+/*
+float getRadiateLight(float4 SHCofe_ADD, float4 SHFunction) {
+
+	float4 radiateLight = 0.0f;
+	radiateLight.x = SHCofe_ADD.x * SHFunction.x;
+	radiateLight.y = SHCofe_ADD.y * SHFunction.y;
+	radiateLight.z = SHCofe_ADD.z * SHFunction.z;
+	radiateLight.w = SHCofe_ADD.w * SHFunction.w;
+
+	return radiateLight.x + radiateLight.y + radiateLight.z + radiateLight.w;
+}
+
+float4 getSHCofe(int i, int j, float radiateLight, float4 SHFunction) {
+
+	radiateLight *= j / 2 == i / 2 ? 0.423431254f : 0.400696844;
+	/*
+	SHCofe.x = radiateLight * SHFunction.x;
+	SHCofe.y = radiateLight * SHFunction.y;
+	SHCofe.z = radiateLight * SHFunction.z;
+	SHCofe.w = radiateLight * SHFunction.w;
+
+	return radiateLight * SHFunction;
+
+}
+*/
+/*
+[numthreads(8, 8, 8)]
+void LPVRadiateCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float4 SHCofe_R = 0.0f;
+	float4 SHCofe_G = 0.0f;
+	float4 SHCofe_B = 0.0f;
+	float3 offset[] = { float3(-1.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f), float3(0.0f, -1.0f, 0.0f),
+					   float3(0.0f, 1.0f, 0.0f), float3(0.0f, 0.0f, -1.0f), float3(0.0f, 0.0f, 1.0f) };
+	for (int i = 0; i < 6; i++) {
+
+		float3 index = id + offset[i];
+		float4 SHCofe_R_ADD = LPVTexture_R_temp[index];
+		float4 SHCofe_G_ADD = LPVTexture_G_temp[index];
+		float4 SHCofe_B_ADD = LPVTexture_B_temp[index];
+
+		for (int j = 0; j < 6; j++) {
+
+			if (i == j) {
+				continue;
+			}
+			float3 radiateDir = normalize(-offset[i] + 0.5f * offset[j]);
+			float4 SHFunction = getSHFunctionWithCos(-radiateDir);
+			float4 SHFunction_center = getSHFunction(-offset[j]);
+			float SolidAngle = j / 2 == i / 2 ? 0.423431254f : 0.400696844f;
+
+			float radiateLight_R = saturate(dot(SHCofe_R_ADD, SHFunction)); //getRadiateLight(SHCofe_R_ADD, SHFunction);
+			radiateLight_R *= SolidAngle;
+			SHCofe_R += radiateLight_R * SHFunction_center; // getSHCofe(i, j, radiateLight_R, SHFunction_center);
+
+			float radiateLight_G = saturate(dot(SHCofe_G_ADD, SHFunction));
+			radiateLight_G *= SolidAngle;
+			SHCofe_G += radiateLight_G * SHFunction_center;
+
+			float radiateLight_B = saturate(dot(SHCofe_B_ADD, SHFunction));
+			radiateLight_B *= SolidAngle;
+			SHCofe_B += radiateLight_B * SHFunction_center;
+
+		}
+	}
+
+	DeviceMemoryBarrierWithGroupSync();
+	LPVTexture_R_temp[id] = SHCofe_R / PI;
+	LPVTexture_G_temp[id] = SHCofe_G / PI;
+	LPVTexture_B_temp[id] = SHCofe_B / PI;
+	LPVTexture_R[id] += SHCofe_R / PI;
+	LPVTexture_G[id] += SHCofe_G / PI;
+	LPVTexture_B[id] += SHCofe_B / PI;
+
+}
+*/
+[numthreads(8, 8, 8)]
+void LPVRadiateCSMain(uint3 id : SV_DispatchThreadID) {
+};
+

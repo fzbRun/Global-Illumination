@@ -1,0 +1,98 @@
+#pragma kernel PRTCSMain
+
+#define PI 3.1415926535
+
+StructuredBuffer<float> SHFunction;
+RWTexture2D<float4> SH0;
+RWTexture2D<float4> SH1;
+RWTexture2D<float4> SH2;
+RWTexture2D<float4> SH3;
+int mapSize;
+
+float3 getNormalFromOctahedral(float2 uv) {
+
+    uv /= mapSize;
+    uv = uv * 2.0f - 1.0f;
+    float3 normal = float3(uv, 1 - abs(uv.x) - abs(uv.y));
+
+    if (normal.z < 0.0f) {
+        float x = normal.x;
+        float y = normal.y;
+        normal.x = (1.0f - abs(y)) * sign(normal.x);
+        normal.y = (1.0f - abs(x)) * sign(normal.y);
+    }
+
+    return normalize(normal);
+
+}
+
+[numthreads(8,8,1)]
+void PRTCSMain(uint3 id : SV_DispatchThreadID)
+{
+  
+    float3 normal = getNormalFromOctahedral(id.xy);
+    float x = normal.x;
+    float y = normal.y;
+    float z = normal.z;
+
+    float SHFunction_normal[16];
+    SHFunction_normal[0] = 1.0f;
+    SHFunction_normal[1] = y;
+    SHFunction_normal[2] = z;
+    SHFunction_normal[3] = x;
+    SHFunction_normal[4] = x * y;
+    SHFunction_normal[5] = y * z;
+    SHFunction_normal[6] = -x * x - y * y + 2 * z * z;
+    SHFunction_normal[7] = z * x;
+    SHFunction_normal[8] = x * x - y * y;
+    SHFunction_normal[9] = y * (3 * x * x - y * y);
+    SHFunction_normal[10] = x * y * z;
+    SHFunction_normal[11] = y * (4 * z * z - x * x - y * y);
+    SHFunction_normal[12] = z * (2 * z * z - 3 * x * x - 3 * y * y);
+    SHFunction_normal[13] = x * (4 * z * z - x * x - y * y);
+    SHFunction_normal[14] = z * (x * x - y * y);
+    SHFunction_normal[15] = x * (x * x - 3 * y * y);
+
+    //float3 rotateAxle = normalize(cross(float3(0.0f, 0.0f, 1.0f), normal));
+    //float cosR = dot(normal, float3(0.0f, 0.0f, 1.0f));
+    //float sinR = sqrt(1 - cosR * cosR);
+    int sampleNum = 0;
+    for (float theta = 0; theta < PI; theta += 0.02f) {
+        for (float phi = 0; phi < 2 * PI; phi += 0.02f) {
+
+            sampleNum++;
+            float3 sampleDir = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+            //sampleDir = cosR * sampleDir + (1 - cosR) * dot(sampleDir, rotateAxle) * rotateAxle + sinR * cross(rotateAxle, sampleDir);
+            //sampleDir = normalize(sampleDir);
+            //To facilitate the test, I use the sampling direction and the Direction cosine of (0,0,1) as the light intensity
+            //float lightStrength = saturate(dot(sampleDir, float3(0.0f, 0.0f, 1.0f)));
+            float lightStrength = saturate(dot(sampleDir, normal));
+            float4 sh0 = float4(SHFunction[0] * SHFunction_normal[0] * lightStrength,
+                                SHFunction[1] * SHFunction_normal[1] * lightStrength,
+                                SHFunction[2] * SHFunction_normal[2] * lightStrength,
+                                SHFunction[3] * SHFunction_normal[3] * lightStrength);
+            float4 sh1 = float4(SHFunction[4] * SHFunction_normal[4] * lightStrength,
+                                SHFunction[5] * SHFunction_normal[5] * lightStrength,
+                                SHFunction[6] * SHFunction_normal[6] * lightStrength,
+                                SHFunction[7] * SHFunction_normal[7] * lightStrength);
+            float4 sh2 = float4(SHFunction[8] * SHFunction_normal[8] * lightStrength,
+                                SHFunction[9] * SHFunction_normal[9] * lightStrength,
+                                SHFunction[10] * SHFunction_normal[10] * lightStrength,
+                                SHFunction[11] * SHFunction_normal[11] * lightStrength);
+            float4 sh3 = float4(SHFunction[12] * SHFunction_normal[12] * lightStrength,
+                                SHFunction[13] * SHFunction_normal[13] * lightStrength,
+                                SHFunction[14] * SHFunction_normal[14] * lightStrength,
+                                SHFunction[15] * SHFunction_normal[15] * lightStrength);
+            SH0[id.xy] += sh0 * saturate(cos(theta));
+            SH1[id.xy] += sh1 * saturate(cos(theta));
+            SH2[id.xy] += sh2 * saturate(cos(theta));
+            SH3[id.xy] += sh3 * saturate(cos(theta));
+        }
+    }
+
+    SH0[id.xy] = SH0[id.xy] * 4 / sampleNum;
+    SH1[id.xy] = SH1[id.xy] * 4 / sampleNum;
+    SH2[id.xy] = SH2[id.xy] * 4 / sampleNum;
+    SH3[id.xy] = SH3[id.xy] * 4 / sampleNum;
+
+}

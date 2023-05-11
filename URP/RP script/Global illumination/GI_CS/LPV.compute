@@ -1,0 +1,339 @@
+//#pragma kernel LPVSetUpCSMain
+#pragma kernel LPVInjectCSMain
+#pragma kernel LPVRadiateCSMain
+
+#include "../../../shaderLibrary/common.hlsl"
+#include "../../../shaderLibrary/LitInput.hlsl"
+
+RWTexture3D<float4> LPVTexture_R;
+RWTexture3D<float4> LPVTexture_G;
+RWTexture3D<float4> LPVTexture_B;
+//RWTexture3D<float4> LPVTexture_R_temp;
+//RWTexture3D<float4> LPVTexture_G_temp;
+//RWTexture3D<float4> LPVTexture_B_temp;
+float3 VoxelBoxStartPoint;
+float3 VoxelBoxSize;
+float VoxelSize;
+int radiateSize;
+float radiateIntensity;
+
+Texture2D<float4> _RSMTexture;
+Texture2D<float4> _RSMNormalTexture;
+Texture2D<float4> _RSMDepthTexture;
+SamplerState sampler_LinearClamp;
+float4 _RSMTexture_TexelSize;
+float RSMSampleSize;
+float RSMIntensity;
+float RSMMapSize;
+
+float2 getUVFromPos(float3 pos, float4x4 mat) {
+	float4 clipPos = mul(mat, float4(pos, 1.0f));
+#if UNITY_UV_STARTS_AT_TOP
+	clipPos.y = -clipPos.y;
+#endif
+	float3 ndcPos = clipPos.xyz / clipPos.w;
+	float2 uv = ndcPos.xy * 0.5f + 0.5f;
+	return uv;
+}
+
+float4 getSHFunction(float3 normal)
+{
+	float x = normal.x;
+	float y = normal.y;
+	float z = normal.z;
+	float4 SHFunction = float4(
+		0.282094792f,
+		-0.488602512f * y,
+		0.488602512f * z,
+		-0.488602512f * x
+		/*
+		  sqrt(1.0f / PI) * 0.5f,
+
+		  -sqrt(3.0f / (4.0f * PI)) * y,
+		  sqrt(3.0f / (4.0f * PI)) * z,
+		  -sqrt(3.0f / (4.0f * PI)) * x
+
+		  sqrt(15.0f / PI) * 0.5f * x * y,
+		  sqrt(15.0f / PI) * 0.5f * y * z,
+		  sqrt(5.0f / PI) * 0.25f * (-x * x - y * y + 2 * z * z),
+		  sqrt(15.0f / PI) * 0.5f * z * x,
+		  sqrt(15.0f / PI) * 0.25f * (x * x - y * y),
+
+		  sqrt(35.0f / (2.0f * PI)) * 0.25f * (3 * x * x - y * y) * y,
+		  sqrt(105.0f / PI) * 0.5f * x * z * y,
+		  sqrt(21.0f / (2.0f * PI)) * 0.25f * y * (4 * z * z - x * x - y * y),
+		  sqrt(7.0f / PI) * 0.25f * z * (2 * z * z - 3 * x * x - 3 * y * y),
+		  sqrt(21.0f / (2.0f * PI)) * 0.25f * x * (4 * z * z - x * x - y * y),
+		  sqrt(105.0f / PI) * 0.25f * (x * x - y * y) * z,
+		  sqrt(35.0f / (2.0f * PI)) * 0.25f * (x * x - 3 * y * y) * x
+		  */
+		);
+	return SHFunction;
+}
+
+float4 getSHFunctionWithCos(float3 normal) {
+	float x = normal.x;
+	float y = normal.y;
+	float z = normal.z;
+	float4 SHFunction = float4(
+		0.886226925f,
+		-1.02332671f * y,
+		1.02332671f * z,
+		-1.02332671f * x
+		);
+	return SHFunction;
+}
+
+//-------------------------------------LPV--------------------------------------------------
+/*
+[numthreads(8, 8, 8)]
+void LPVSetUpCSMain(uint3 id : SV_DispatchThreadID) {
+	LPVTexture_R[id] = 0.0f;
+	LPVTexture_G[id] = 0.0f;
+	LPVTexture_B[id] = 0.0f;
+	//LPVTexture_R_temp[id] = 0.0f;
+	//LPVTexture_G_temp[id] = 0.0f;
+	//LPVTexture_B_temp[id] = 0.0f;
+}
+*/
+
+[numthreads(8, 8, 8)]
+void LPVInjectCSMain(uint3 id : SV_DispatchThreadID)
+{
+
+	float4 SHCofe_R = 0.0f;
+	float4 SHCofe_G = 0.0f;
+	float4 SHCofe_B = 0.0f;
+
+	float halfVoxelSize = VoxelSize * 0.5f;
+	float3 centerVoxelPos = id * VoxelSize + VoxelBoxStartPoint + halfVoxelSize;
+	int sampleSize = 0;
+	for (int x = -1; x <= 1; x++) {
+		for (int y = -1; y <= 1; y++) {
+			for (int z = -1; z <= 1; z++) {
+
+				sampleSize++;
+
+				float3 sampleVoxelPos = float3(x, y, z) * halfVoxelSize + centerVoxelPos;
+				float2 uv = getUVFromPos(sampleVoxelPos, LightVPMatrix);
+				float2 uvIndex = uv * RSMMapSize;
+
+				float3 sampleDepth = _RSMDepthTexture[uvIndex];
+				float3 VPLPos = ComputeWorldSpacePosition(uv, sampleDepth, inverseLightViewProjectionMatrix);
+				float3 VPLNormal = _RSMNormalTexture[uvIndex];
+				VPLNormal = VPLNormal * 2.0f - 1.0f;
+				float3 VPLColor = _RSMTexture[uvIndex];
+
+				float3 VPLPos_Temp = VPLPos + halfVoxelSize * VPLNormal;
+				float3 offset = abs(centerVoxelPos - VPLPos_Temp);
+				if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+
+					//float3 dir = normalize(VPLPos - centerVoxelPos);
+					//float fluxCos = saturate(dot(VPLNormal, -dir));
+					float3 dir = normalize(-VPLNormal);
+					float fluxCos = abs(dot(normalize(VPLPos - centerVoxelPos), -dir));
+					float4 SHFunction = getSHFunction(dir);
+
+					SHCofe_R += SHFunction * VPLColor.r * fluxCos;
+					SHCofe_G += SHFunction * VPLColor.g * fluxCos;
+					SHCofe_B += SHFunction * VPLColor.b * fluxCos;
+
+				}
+
+			}
+		}
+	}
+
+	LPVTexture_R[id] = SHCofe_R * 4 / sampleSize;
+	LPVTexture_G[id] = SHCofe_G * 4 / sampleSize;
+	LPVTexture_B[id] = SHCofe_B * 4 / sampleSize;
+	//LPVTexture_R_temp[id] = SHCofe_R * 4 / sampleSize;
+	//LPVTexture_G_temp[id] = SHCofe_G * 4 / sampleSize;
+	//LPVTexture_B_temp[id] = SHCofe_B * 4 / sampleSize;
+
+}
+
+/*
+[numthreads(8, 8, 1)]
+void LPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float3 flux = _RSMTexture[id.xy];
+	float3 normal = _RSMNormalTexture[id.xy];
+	normal = normal * 2.0f - 1.0f;
+	float depth = _RSMDepthTexture[id.xy];
+	float2 uv = (float3(id).xy + 0.5f) / RSMMapSize;
+	float3 worldPos = getWorldPosFromRSMUV(uv, depth);
+
+	float halfVoxelSize = VoxelSize * 0.5f;
+	float3 voxelIndex = floor(worldPos - VoxelBoxStartPoint) / VoxelSize;
+	float3 voxelCenterPos = voxelIndex * VoxelSize + halfVoxelSize + VoxelBoxStartPoint;
+
+	float3 offset = abs(worldPos + halfVoxelSize * normal - voxelCenterPos);
+	float4 SHCofe_R = 0.0f;
+	float4 SHCofe_G = 0.0f;
+	float4 SHCofe_B = 0.0f;
+	if (offset.x < halfVoxelSize && offset.y < halfVoxelSize && offset.z < halfVoxelSize) {
+
+		float3 sampleDir = normalize(worldPos - voxelCenterPos);
+		float4 SHFunction = getSHFunction(sampleDir);
+		SHCofe_R = flux.x / PI * SHFunction;
+		SHCofe_G = flux.y / PI * SHFunction;
+		SHCofe_B = flux.z / PI * SHFunction;
+
+	}
+
+	//InterlockedAdd(LPVTexture_R[voxelIndex], SHCofe_R);
+	//InterlockedAdd(LPVTexture_G[voxelIndex], SHCofe_G);
+	//InterlockedAdd(LPVTexture_B[voxelIndex], SHCofe_B);
+
+	LPVTexture_R[voxelIndex] += SHCofe_R;
+	LPVTexture_G[voxelIndex] += SHCofe_G;
+	LPVTexture_B[voxelIndex] += SHCofe_B;
+
+}
+*/
+
+/*
+float getRadiateLight(float4 SHCofe_ADD, float4 SHFunction) {
+
+	float4 radiateLight = 0.0f;
+	radiateLight.x = SHCofe_ADD.x * SHFunction.x;
+	radiateLight.y = SHCofe_ADD.y * SHFunction.y;
+	radiateLight.z = SHCofe_ADD.z * SHFunction.z;
+	radiateLight.w = SHCofe_ADD.w * SHFunction.w;
+
+	return radiateLight.x + radiateLight.y + radiateLight.z + radiateLight.w;
+}
+
+float4 getSHCofe(int i, int j, float radiateLight, float4 SHFunction) {
+
+	radiateLight *= j / 2 == i / 2 ? 0.423431254f : 0.400696844;
+	/*
+	SHCofe.x = radiateLight * SHFunction.x;
+	SHCofe.y = radiateLight * SHFunction.y;
+	SHCofe.z = radiateLight * SHFunction.z;
+	SHCofe.w = radiateLight * SHFunction.w;
+
+	return radiateLight * SHFunction;
+
+}
+*/
+/*
+[numthreads(8, 8, 8)]
+void LPVRadiateCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float4 SHCofe_R = 0.0f;
+	float4 SHCofe_G = 0.0f;
+	float4 SHCofe_B = 0.0f;
+	float3 offset[] = { float3(-1.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f), float3(0.0f, -1.0f, 0.0f),
+					   float3(0.0f, 1.0f, 0.0f), float3(0.0f, 0.0f, -1.0f), float3(0.0f, 0.0f, 1.0f) };
+	for (int i = 0; i < 6; i++) {
+
+		float3 index = id + offset[i];
+		float4 SHCofe_R_ADD = LPVTexture_R_temp[index];
+		float4 SHCofe_G_ADD = LPVTexture_G_temp[index];
+		float4 SHCofe_B_ADD = LPVTexture_B_temp[index];
+
+		for (int j = 0; j < 6; j++) {
+
+			if (i == j) {
+				continue;
+			}
+			float3 radiateDir = normalize(-offset[i] + 0.5f * offset[j]);
+			float4 SHFunction = getSHFunctionWithCos(-radiateDir);
+			float4 SHFunction_center = getSHFunction(-offset[j]);
+			float SolidAngle = j / 2 == i / 2 ? 0.423431254f : 0.400696844f;
+
+			float radiateLight_R = saturate(dot(SHCofe_R_ADD, SHFunction)); //getRadiateLight(SHCofe_R_ADD, SHFunction);
+			radiateLight_R *= SolidAngle;
+			SHCofe_R += radiateLight_R * SHFunction_center; // getSHCofe(i, j, radiateLight_R, SHFunction_center);
+
+			float radiateLight_G = saturate(dot(SHCofe_G_ADD, SHFunction));
+			radiateLight_G *= SolidAngle;
+			SHCofe_G += radiateLight_G * SHFunction_center;
+
+			float radiateLight_B = saturate(dot(SHCofe_B_ADD, SHFunction));
+			radiateLight_B *= SolidAngle;
+			SHCofe_B += radiateLight_B * SHFunction_center;
+
+		}
+	}
+
+	DeviceMemoryBarrierWithGroupSync();
+	LPVTexture_R_temp[id] = SHCofe_R / PI;
+	LPVTexture_G_temp[id] = SHCofe_G / PI;
+	LPVTexture_B_temp[id] = SHCofe_B / PI;
+	LPVTexture_R[id] += SHCofe_R / PI;
+	LPVTexture_G[id] += SHCofe_G / PI;
+	LPVTexture_B[id] += SHCofe_B / PI;
+
+}
+*/
+[numthreads(8, 8, 8)]
+void LPVRadiateCSMain(uint3 id : SV_DispatchThreadID) {
+
+	float4 final_SHCofe_R = LPVTexture_R[id];
+	float4 final_SHCofe_G = LPVTexture_G[id];
+	float4 final_SHCofe_B = LPVTexture_B[id];
+	//DeviceMemoryBarrierWithGroupSync();
+
+	float3 offset[] = { float3(-1.0f, 0.0f, 0.0f), float3(1.0f, 0.0f, 0.0f), float3(0.0f, -1.0f, 0.0f),
+					   float3(0.0f, 1.0f, 0.0f), float3(0.0f, 0.0f, -1.0f), float3(0.0f, 0.0f, 1.0f) };
+
+	for (int s = 0; s < radiateSize; s++) {
+
+		float4 SHCofe_R = 0.0f;
+		float4 SHCofe_G = 0.0f;
+		float4 SHCofe_B = 0.0f;
+
+		for (int i = 0; i < 6; i++) {
+
+			float3 index = id + offset[i];
+			float4 SHCofe_R_ADD = LPVTexture_R[index];
+			float4 SHCofe_G_ADD = LPVTexture_G[index];
+			float4 SHCofe_B_ADD = LPVTexture_B[index];
+			//DeviceMemoryBarrierWithGroupSync();
+
+			for (int j = 0; j < 6; j++) {
+
+				if (i == j) {
+					continue;
+				}
+				float3 radiateDir = normalize(-offset[i] + 0.5f * offset[j]);
+				float4 SHFunction = getSHFunctionWithCos(-radiateDir);
+				float4 SHFunction_center = getSHFunction(-offset[j]);
+				float SolidAngle = j / 2 == i / 2 ? 0.423431254f : 0.400696844f;
+				SolidAngle *= radiateIntensity;
+
+				float radiateLight_R = saturate(dot(SHCofe_R_ADD, SHFunction)); //getRadiateLight(SHCofe_R_ADD, SHFunction);
+				radiateLight_R *= SolidAngle;
+				SHCofe_R += radiateLight_R * SHFunction_center; // getSHCofe(i, j, radiateLight_R, SHFunction_center);
+
+				float radiateLight_G = saturate(dot(SHCofe_G_ADD, SHFunction));
+				radiateLight_G *= SolidAngle;
+				SHCofe_G += radiateLight_G * SHFunction_center;
+
+				float radiateLight_B = saturate(dot(SHCofe_B_ADD, SHFunction));
+				radiateLight_B *= SolidAngle;
+				SHCofe_B += radiateLight_B * SHFunction_center;
+
+			}
+
+		}
+
+		final_SHCofe_R += SHCofe_R / PI;
+		final_SHCofe_G += SHCofe_G / PI;
+		final_SHCofe_B += SHCofe_B / PI;
+
+		LPVTexture_R[id] = SHCofe_R / PI;
+		LPVTexture_G[id] = SHCofe_G / PI;
+		LPVTexture_B[id] = SHCofe_B / PI;
+		DeviceMemoryBarrierWithGroupSync();
+
+	}
+
+	LPVTexture_R[id] = final_SHCofe_R;
+	LPVTexture_G[id] = final_SHCofe_G;
+	LPVTexture_B[id] = final_SHCofe_B;
+
+}

@@ -1,0 +1,80 @@
+#pragma kernel makeIrradianceMapMain
+
+#define PI 3.14159265359f
+
+TextureCube<float4> environmentMap;
+RWTexture2D<float4> Result;
+int mapSize;
+SamplerState sampler_LinearClamp;
+
+float3 getNormalFromOctahedral(float2 uv) {
+
+    uv /= mapSize;
+    uv = uv * 2.0f - 1.0f;
+    float3 normal = float3(uv, 1 - abs(uv.x) - abs(uv.y));
+
+    if (normal.z < 0.0f) {
+        float x = normal.x;
+        float y = normal.y;
+        normal.x = (1.0f - abs(y)) * sign(normal.x);
+        normal.y = (1.0f - abs(x)) * sign(normal.y);
+    }
+
+    return normalize(normal);
+
+}
+
+float2 getOctahedralUVfromNormal(float3 normal) {
+
+    float3 normal_abs = abs(normal);
+    float2 uv = float2(normal_abs.x, normal_abs.y) * (1.0f / (normal_abs.x + normal_abs.y + normal_abs.z));
+    if (normal.z < 0.0f) {
+        uv = 1.0f - float2(uv.y, uv.x);
+    }
+    uv *= float2(sign(normal.x), sign(normal.y));
+    uv = uv * 0.5f + 0.5f;
+    uv *= mapSize;
+
+}
+
+float3 getIrradiance(float3 normal) {
+
+    float3 irradiance = 0.0f;
+    float3 up = float3(0.0f, 1.0f, 0.0f);
+    //Right-handed coordinate system
+    float3 right = cross(up, normal);
+    up = cross(normal, right);
+
+    float sampleDelta = 0.25;
+    float nrSamples = 0.0f;
+    for (float phi = 0.0f; phi < 2.0f * PI; phi += sampleDelta) {
+        for (float theta = 0.0f; theta < 0.5f * PI; theta += sampleDelta) {
+
+            float3 tangentSample = float3(sin(theta) * cos(phi), sin(theta) * sin(phi), cos(theta));
+            float3 sampleDir = tangentSample.x * right + tangentSample.y * up + tangentSample.z * normal;
+
+            irradiance += environmentMap.SampleLevel(sampler_LinearClamp, sampleDir, 0);
+            nrSamples++;
+
+        }
+    }
+    //return environmentMap.SampleLevel(sampler_LinearClamp, normal, 0);
+    return irradiance * (1.0f / float(nrSamples));//* PI
+
+}
+
+[numthreads(8, 8, 1)]
+void makeIrradianceMapMain(uint3 id : SV_DispatchThreadID)
+{
+
+    //First restore the normal direction and use octahedron mapping (relatively simple)
+    float2 uv = id.xy;
+    float3 normal = getNormalFromOctahedral(uv);
+
+    //After getting the normal direction, use tangent space to traverse zenith angle 
+    //and azimuth angle to sample the hemisphere of the environmental sky box
+    float3 irradiance = getIrradiance(normal);
+
+    Result[uv] = float4(irradiance, 1.0f);
+
+}

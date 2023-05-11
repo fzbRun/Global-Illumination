@@ -1,0 +1,153 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!21 &2100000
+Material:
+  serializedVersion: 8
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_Name: circuitryLit
+  m_Shader: {fileID: 4800000, guid: bf0173ee61813ca4fb84c6db720c4c07, type: 3}
+  m_ValidKeywords:
+  - _DETAIL_MAP
+  - _FastRSM
+  - _MASK_MAP
+  - _NORMAL_MAP
+  - _RECEIVE_SHADOWS
+  m_InvalidKeywords:
+  - _FOLDOUT_BASETEXTURE_ON
+  - _FOLDOUT_ILLUMINATION_ON
+  - _FOLDOUT_NORMALTEXTURE_ON
+  - _FOLDOUT_RENDERSETTING_ON
+  - _FOLDOUT_TEXTURE_ON
+  - _SHADOWS_ON
+  m_LightmapFlags: 4
+  m_EnableInstancingVariants: 0
+  m_DoubleSidedGI: 0
+  m_CustomRenderQueue: -1
+  stringTagMap: {}
+  disabledShaderPasses: []
+  m_SavedProperties:
+    serializedVersion: 3
+    m_TexEnvs:
+    - _BaseMap:
+        m_Texture: {fileID: 2800000, guid: 0b8af26cd868041428859bf7083508bd, type: 3}
+        m_Scale: {x: 2, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _BumpMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DetailAlbedoMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DetailMap:
+        m_Texture: {fileID: 2800000, guid: 89d8cafa6bb8b804382cd532b2329e33, type: 3}
+        m_Scale: {x: 8, y: 4}
+        m_Offset: {x: 0, y: 0}
+    - _DetailMask:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _DetailNormalMap:
+        m_Texture: {fileID: 2800000, guid: a74bce0964e4e324b8fbaa2f7c810ebc, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _EmissionMap:
+        m_Texture: {fileID: 2800000, guid: 84c114547a74e844cbce1471f9f86e87, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _HeightMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MainTex:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MaskMap:
+        m_Texture: {fileID: 2800000, guid: a2b379341f770d844b142e68a8120606, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MetallicGlossMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _MetallicMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _NormalMap:
+        m_Texture: {fileID: 2800000, guid: ac12f0321bc9a7641a305bfdf20ba5a3, type: 3}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _OcclusionMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _ParallaxMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    - _RoughnessMap:
+        m_Texture: {fileID: 0}
+        m_Scale: {x: 1, y: 1}
+        m_Offset: {x: 0, y: 0}
+    m_Ints: []
+    m_Floats:
+    - _BumpScale: 1
+    - _Clipping: 0
+    - _CutOff: 0.5
+    - _Cutoff: 0.5
+    - _DetailAlbedo: 1
+    - _DetailMapToggle: 1
+    - _DetailNormalMapScale: 1
+    - _DetailNormalScale: 1
+    - _DetailSmoothness: 1
+    - _DstBlend: 0
+    - _FastRSM: 1
+    - _Fold_Out: 1
+    - _Foldout: 1
+    - _Foldout_Illumination: 1
+    - _Foldout_Illumination_Out: 1
+    - _Foldout_RenderSetting: 1
+    - _Foldout_RenderSetting_Out: 1
+    - _Foldout_Texture: 1
+    - _Foldout_Texture_Out: 1
+    - _Foldout_baseTexture: 1
+    - _Foldout_baseTexture_Out: 1
+    - _Foldout_normalTexture: 1
+    - _Foldout_normalTexture_Out: 1
+    - _Fresnel: 1
+    - _GlossMapScale: 1
+    - _Glossiness: 0.5
+    - _GlossyReflections: 1
+    - _HeightMapToggle: 0
+    - _HeightScale: 1
+    - _MaskMapToggle: 1
+    - _Metallic: 1
+    - _MetallicToggle: 0
+    - _Mode: 0
+    - _NormalMapToggle: 1
+    - _NormalScale: 1
+    - _Occlusion: 1
+    - _OcclusionStrength: 1
+    - _OcclusionToggle: 0
+    - _Parallax: 0.02
+    - _ReceiveShadows: 1
+    - _Roughness: 0
+    - _RoughnessToggle: 0
+    - _Shadows: 0
+    - _Smoothness: 1
+    - _SmoothnessTextureChannel: 0
+    - _SpecularHighlights: 1
+    - _SrcBlend: 1
+    - _UVSec: 0
+    - _ZWrite: 1
+    m_Colors:
+    - _BaseColor: {r: 0.5, g: 0.5, b: 0.5, a: 1}
+    - _Color: {r: 1, g: 1, b: 1, a: 1}
+    - _EmissionColor: {r: 1, g: 1, b: 1, a: 1}
+  m_BuildTextureStacks: []
