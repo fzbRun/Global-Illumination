@@ -26,9 +26,9 @@ MonoBehaviour:
     directional:
       atlasSize: 512
       cascadeCount: 4
-      cascadeRatio1: 0.130465
-      cascadeRatio2: 0.27282342
-      cascadeRatio3: 0.48090196
+      cascadeRatio1: 0.13034475
+      cascadeRatio2: 0.27249494
+      cascadeRatio3: 0.48014808
       cascadeFade: 1
       filter: 1
       cascadeBlendMode: 1
@@ -78,7 +78,7 @@ MonoBehaviour:
       LPVMode: 1
       LPVCS: {fileID: 7200000, guid: 70b7a4683f8fbab44affb702605f162b, type: 3}
       SSLPVCS: {fileID: 7200000, guid: 0f59a28c42cfc044981e5d57f51ccbe2, type: 3}
-      radiateSize: 0
+      radiateSize: 4
       Intensity: 0.5
       radiateIntensity: 1
   colorLUTResolution: 32

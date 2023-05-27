@@ -165,12 +165,14 @@ void LPVRadiate(uint3 id) {
 
 				float3 VPLAvgDepthOffset = nearPlane - VPLAvgDepth;
 				float3 depthOffset = VPLAvgDepthOffset - avgDepthOffset;
-				float3 avgDepthSquareOffset = sign(-lightDir * radiateDir) > 0.0f ? avgDepthSquare : VoxelSize - avgDepthSquare;
-				avgDepthSquareOffset = saturate(avgDepthSquareOffset - avgDepthOffset * avgDepthOffset);
+				//float3 avgDepthSquareOffset = sign(-lightDir * radiateDir) > 0.0f ? avgDepthSquare : VoxelSize - avgDepthSquare;
+				//avgDepthSquareOffset = saturate(avgDepthSquareOffset - avgDepthOffset * avgDepthOffset);
+				float3 avgDepthSquareOffset = avgDepthSquare * avgDepthSquare;
 
-				float3 avgDepthCheck = sign(avgDepthOffset * radiateDir) * sign(avgDepth) * sign(avgDepthSquare) * sign(depthOffset);
-				float3 unoccRate = avgDepthCheck > 0.0f ? avgDepthSquareOffset / (avgDepthSquareOffset + depthOffset * depthOffset) + 0.5f : 1.0f;
-				radiateDir = normalize(radiateDir);
+				float3 avgDepthCheck = sign(avgDepth) * sign(avgDepthSquareOffset) * sign(depthOffset);
+				float3 Chebyshev = avgDepthSquareOffset / (avgDepthSquareOffset + depthOffset * depthOffset) * 0.5f;
+				Chebyshev = sign(depthOffset * radiateDir) ? Chebyshev : 1 - Chebyshev;
+				float3 unoccRate = avgDepthCheck == 0.0f ? 1.0f : Chebyshev;
 				unoccRate = unoccRate * radiateDir * radiateDir;
 				float unoccScale = (unoccRate.x + unoccRate.y + unoccRate.z) * radiateIntensity;
 
@@ -428,7 +430,7 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 	//float3 nearPlaneVoxelPos = centerVoxelWorldPos + halfVoxelSize;	//worldSpace
 	//float3 aveDepthSquare = 0.0f;
 	float3 avgDepth = 0.0f;
-	float3 avgDepthSquare = 0.0f;
+	//float3 avgDepthSquare = 0.0f;
 	int VPLNum = 0;
 	//float3(0.0f, 0.0f, halfVoxelSize);// +halfVoxelSize;
 	//float screenDepth[27] = { 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f };
@@ -576,7 +578,7 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 			float3 depth = cameraWorldPos;
 			avgDepth += depth;
 			depth = abs(centerVoxelWorldPos + sign(-lightDir) * halfVoxelSize - depth);
-			avgDepthSquare += depth * depth;
+			//avgDepthSquare += depth * depth;
 			VPLNum++;
 		}
 	}
@@ -590,12 +592,12 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 	//SSLPVAvgDepthSquareTexture[id] = float4(aveDepthSquare, 1.0f);
 	//LPVTexture_R[id] = float4(aveDepth, 1.0f);
 	float3 avgPos = avgDepth / max(VPLNum, 1);	//worldPos
-	float3 avgSquarePos = avgDepthSquare / max(VPLNum, 1);
+	//float3 avgSquarePos = avgDepthSquare / max(VPLNum, 1);
 	float3 originAvgPos = SSLPVAvgDepthTexture[id];
-	float3 originAvgSquarePos = SSLPVAvgDepthSquareTexture[id];
+	//float3 originAvgSquarePos = SSLPVAvgDepthSquareTexture[id];
 
 	avgPos = VPLNum == 0 ? originAvgPos : avgPos * 0.1f + originAvgPos * 0.9f;
-	avgSquarePos = VPLNum == 0 ? originAvgSquarePos : avgSquarePos * 0.1f + originAvgSquarePos * 0.9f;
+	//avgSquarePos = VPLNum == 0 ? originAvgSquarePos : avgSquarePos * 0.1f + originAvgSquarePos * 0.9f;
 	/*
 	for (int x = -1; x < 2; x++) {
 		for (int y = -1; y < 2; y++) {
@@ -611,7 +613,7 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 	}
 	*/
 	SSLPVAvgDepthTexture[id] = float4(avgPos, sign(VPLNum));
-	SSLPVAvgDepthSquareTexture[id] = float4(avgSquarePos, sign(VPLNum));
+	//SSLPVAvgDepthSquareTexture[id] = float4(avgSquarePos, sign(VPLNum));
 	//LPVTexture_R[id] = float4(avgPos, sign(VPLNum));
 	//LPVTexture_G[id] = float4(avgSquarePos, sign(VPLNum));
 	//LPVTexture_B[id] = float4(avgSquarePos, sign(VPLNum));
@@ -621,6 +623,7 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 	float4 SHCofe_G = 0.0f;
 	float4 SHCofe_B = 0.0f;
 	float3 VPLAvgDepth = 0.0f;
+	float3 avgDepthSquare = 0.0f;
 	VPLNum = 0;
 	for (int i = 0; i < 20; i++) {
 
@@ -663,6 +666,7 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 			SHCofe_B += SHFunction * VPLColor.b * fluxCos;
 
 			VPLAvgDepth += VPLWorldPos;
+			avgDepthSquare += VPLWorldPos + VPLMoveDistance - avgPos;
 			VPLNum++;
 
 		}
@@ -776,6 +780,11 @@ void SSLPVInjectCSMain(uint3 id : SV_DispatchThreadID) {
 	LPVTexture_R[id] = SHCofe_R * 0.2f;
 	LPVTexture_G[id] = SHCofe_G * 0.2f;
 	LPVTexture_B[id] = SHCofe_B * 0.2f;
+
+	float3 avgSquarePos = avgDepthSquare / max(VPLNum, 1);
+	float3 originAvgSquarePos = SSLPVAvgDepthSquareTexture[id];
+	avgSquarePos = VPLNum == 0 ? originAvgSquarePos : avgSquarePos * 0.1f + originAvgSquarePos * 0.9f;
+	SSLPVAvgDepthSquareTexture[id] = float4(avgSquarePos, sign(VPLNum));
 
 	float3 originVPLAvgPos = SSLPVVPLAvgDepthTexture[id];
 	float3 VPLAvgPos = VPLAvgDepth / max(VPLNum, 1);
